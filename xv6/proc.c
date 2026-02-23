@@ -20,6 +20,14 @@ extern void trapret(void);
 
 static void wakeup1(void *chan);
 
+static uint randstate = 1;
+static uint
+randlcg(void)
+{
+  randstate = randstate * 2654595 + 1033931290;
+  return randstate;
+}
+
 void
 pinit(void)
 {
@@ -88,6 +96,7 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->tickets = 1;
 
   release(&ptable.lock);
 
@@ -323,7 +332,11 @@ wait(void)
 void
 scheduler(void)
 {
+  int total; 
+  int winner;
+  int running_sum;
   struct proc *p;
+  struct proc *chosen;
   struct cpu *c = mycpu();
   c->proc = 0;
   
@@ -333,26 +346,40 @@ scheduler(void)
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
+
+    total = 0;
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state == RUNNABLE)
+        total += p->tickets;
+    }
+    if(total == 0){
+      release(&ptable.lock);
+      continue;
+    }
+
+    winner = randlcg() % total;
+
+    chosen = 0;
+    running_sum = 0;
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
-
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-
-      swtch(&(c->scheduler), p->context);
+      running_sum += p->tickets;
+      if(running_sum > winner){
+        chosen = p;
+        break;
+      }
+    }
+    // 4) run that process
+    if(chosen){
+      c->proc = chosen;
+      switchuvm(chosen);
+      chosen->state = RUNNING;
+      swtch(&(c->scheduler), chosen->context);
       switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
       c->proc = 0;
     }
     release(&ptable.lock);
-
   }
 }
 
@@ -532,4 +559,17 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+int
+settickets(int n)
+{
+  struct proc *p;
+  if(n < 1)
+    return -1;
+  acquire(&ptable.lock);
+  p = myproc();
+  p->tickets = n;
+  release(&ptable.lock);
+  return 0;
 }
